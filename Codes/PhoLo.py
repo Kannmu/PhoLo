@@ -30,7 +30,7 @@ if __name__ == "__main__":
     for _ in tqdm.tqdm(range(1000)):
         # OptimizerIns.SAStep()
         # OptimizerIns.SGDStep(0.1)
-        OptimizerIns.AdamStep(0.05)
+        OptimizerIns.AdamStep(1)
         # OptimizerIns.ParticleStep()
     plt.ioff()
     plt.show()

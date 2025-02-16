@@ -1,5 +1,6 @@
 import math
 import os
+from re import T
 import numpy as np
 from Files import *
 from GUI import *
@@ -14,18 +15,25 @@ class Optimizer:
         self.CanvasSize = CanvasSize
 
         # Initialize all parameters
-        self.ImageParams = np.ones((len(ImagesList), 3))
-        self.CanvasArray = np.zeros(self.CanvasSize.original_size,dtype=np.int32)
+        self.ImageParams = np.random.rand(len(ImagesList), 3)
+
+        if self.CanvasSize.auto_size:
+            self.CanvasParams = np.zeros(*np.asarray(self.CanvasSize.original_size).shape)
+        else:
+            self.CanvasParams = np.zeros(*np.asarray(self.CanvasSize.original_size).shape)
+
+        self.ClampParams()
+
+        self.CanvasArray = np.zeros(self.CanvasSize.original_size).astype(np.int16)
+        
         self.temperature = InitialTemperature
         self.cooling_rate = CoolingRate
         self.LayoutViewer = LayoutViewer(self.CanvasSize.original_size)
 
-        if self.CanvasSize.auto_size:
-            self.CanvasParams = np.zeros(np.asarray(self.CanvasSize.original_size).shape)
-        else:
-            self.CanvasParams = None
-
+        self.LowestLoss = 1e10
+        # Loss History List
         self.LossList = []
+        self.HighestLoss = 0
 
     def ParticleStep(self, num_particles=30, inertia_weight=0.5, cognitive_coef=1.5, social_coef=1.5):
         # Step Function for simulating particle swarm optimization algorithm
@@ -141,10 +149,15 @@ class Optimizer:
 
         # Increment time step
         self.t += 1
+        
+        TempImageParams = self.ImageParams.copy()
+        if self.CanvasSize.auto_size:
+            TempCanvasParams = self.CanvasParams.copy()
 
         # Calculate current loss
         self.CurrentLoss, LossDetails = self.Loss()
-
+        if(self.HighestLoss != 0):
+            self.HighestLoss = self.CurrentLoss
         # Gradient calculation
         gradients = self.calculate_gradients()
 
@@ -174,24 +187,20 @@ class Optimizer:
             self.CanvasParams -= Lr * m_hat_canvas / (np.sqrt(v_hat_canvas) + Epsilon)
 
         # Clamp parameters to valid ranges
-        self.ImageParams[:, 0] = np.clip(self.ImageParams[:, 0], 1 / len(self.ImagesList), 1)
-        self.ImageParams[:, 1:] = np.clip(self.ImageParams[:, 1:], 0, 1)
-
-        if self.CanvasSize.auto_size:
-            self.CanvasParams = np.clip(self.CanvasParams, 0, 1)
+        self.ClampParams()
 
         # Calculate new loss
         new_Loss, new_LossDetails = self.Loss()
 
         # Accept new solution if loss has decreased
-        if new_Loss < self.CurrentLoss:
+        if((new_Loss < self.LowestLoss or abs(new_Loss - self.LowestLoss)/self.HighestLoss < 0.1)):
             self.CurrentLoss = new_Loss
-            LossDetails = new_LossDetails
+            self.LowestLoss = new_Loss
         else:
             # Revert to old solution if no improvement
-            self.ImageParams += Lr * m_hat_image / (np.sqrt(v_hat_image) + Epsilon)
+            self.ImageParams = TempImageParams
             if self.CanvasSize.auto_size:
-                self.CanvasParams += Lr * m_hat_canvas / (np.sqrt(v_hat_canvas) + Epsilon)
+                self.CanvasParams = TempCanvasParams
 
         self.LossList.append(self.CurrentLoss)
 
@@ -225,13 +234,16 @@ class Optimizer:
         self.LayoutViewer.draw_loss_curve(self.LossList)
         self.LayoutViewer.step()
 
-
     def SGDStep(self,Lr = 0.01):
         # Step Function for simulating stochastic gradient descent algorithm
-        
+        TempImageParams = self.ImageParams.copy()
+        if self.CanvasSize.auto_size:
+            TempCanvasParams = self.CanvasParams.copy()
+
         # Calculate current loss
         self.CurrentLoss, LossDetails = self.Loss()
-
+        if(self.HighestLoss != 0):
+            self.HighestLoss = self.CurrentLoss
         # Gradient calculation
         gradients = self.calculate_gradients()
         
@@ -242,24 +254,20 @@ class Optimizer:
             self.CanvasParams -= learning_rate * gradients['canvas']
 
         # Clamp parameters to valid ranges
-        self.ImageParams[:, 0] = np.clip(self.ImageParams[:, 0], 1 / len(self.ImagesList), 1)
-        self.ImageParams[:, 1:] = np.clip(self.ImageParams[:, 1:], 0, 1)
-
-        if self.CanvasSize.auto_size:
-            self.CanvasParams = np.clip(self.CanvasParams, 0, 1)
+        self.ClampParams()
 
         # Calculate new loss
         new_Loss, new_LossDetails = self.Loss()
 
         # Accept new solution if loss has decreased
-        if new_Loss < self.CurrentLoss:
+        if((new_Loss < self.LowestLoss or abs(new_Loss - self.LowestLoss)/self.HighestLoss < 0.1)):
             self.CurrentLoss = new_Loss
-            LossDetails = new_LossDetails
+            self.LowestLoss = new_Loss
         else:
             # Revert to old solution if no improvement
-            self.ImageParams += learning_rate * gradients['image']
+            self.ImageParams = TempImageParams
             if self.CanvasSize.auto_size:
-                self.CanvasParams += learning_rate * gradients['canvas']
+                self.CanvasParams = TempCanvasParams
 
         self.LossList.append(self.CurrentLoss)
 
@@ -289,6 +297,8 @@ class Optimizer:
         )
 
         self.DrawRect(Block=False)
+        self.LayoutViewer.draw_loss_curve(self.LossList)
+        self.LayoutViewer.step()
     
     def calculate_gradients(self):
         # Placeholder function to calculate gradients
@@ -298,7 +308,6 @@ class Optimizer:
             'canvas': np.random.normal(size=self.CanvasParams.shape) if self.CanvasSize.auto_size else np.zeros_like(self.CanvasParams)
         }
         return gradients
-
 
     def SAStep(self):
         # Step Function for simulating annealing algorithm
@@ -313,29 +322,39 @@ class Optimizer:
         # Generate new parameters using vectorized operations
         random_adjustments = 0.5 * np.random.normal(size=self.ImageParams.shape)
         new_Param = TempParam + random_adjustments
-        new_Param[:, 0] = np.clip(new_Param[:, 0], 1 / len(self.ImagesList), 1)
-        new_Param[:, 1:] = np.clip(new_Param[:, 1:], 0, 1)
 
         if self.CanvasSize.auto_size:
             new_CanvasParam = TempCanvasParam + 0.5 * np.random.normal(size=self.CanvasParams.shape)
-            new_CanvasParam = np.clip(new_CanvasParam, 0, 1)
             self.CanvasParams = new_CanvasParam  # Temporarily switch to new solution
+
+        self.ClampParams()
 
         self.ImageParams = new_Param  # Temporarily switch to new solution
 
         new_Loss, new_LossDetails = self.Loss()
         acceptance_probability = np.exp((self.CurrentLoss - new_Loss) / self.temperature)
-        if new_Loss < self.CurrentLoss or acceptance_probability > np.random.rand():
+
+
+        if((new_Loss < self.LowestLoss or abs(new_Loss - self.LowestLoss)/self.HighestLoss < 0.1)):
             self.CurrentLoss = new_Loss
-            LossDetails = new_LossDetails
-            self.ImageParams = new_Param  # Accept new solution
-            if self.CanvasSize.auto_size:
-                self.CanvasParams = new_CanvasParam
+            self.LowestLoss = new_Loss
         else:
-            # Revert to old solution
+            # Revert to old solution if no improvement
             self.ImageParams = TempParam
             if self.CanvasSize.auto_size:
                 self.CanvasParams = TempCanvasParam
+
+        # if new_Loss < self.CurrentLoss or acceptance_probability > np.random.rand():
+        #     self.CurrentLoss = new_Loss
+        #     LossDetails = new_LossDetails
+        #     self.ImageParams = new_Param  # Accept new solution
+        #     if self.CanvasSize.auto_size:
+        #         self.CanvasParams = new_CanvasParam
+        # else:
+        #     # Revert to old solution
+        #     self.ImageParams = TempParam
+        #     if self.CanvasSize.auto_size:
+        #         self.CanvasParams = TempCanvasParam
 
         # Cool down
         self.temperature *= self.cooling_rate
@@ -368,12 +387,14 @@ class Optimizer:
         )
 
         self.DrawRect(Block=False)
+        self.LayoutViewer.draw_loss_curve(self.LossList)
+        self.LayoutViewer.step()
+    
     def ApplyParams(self):
         # Update Auto Canvas Params
         if self.CanvasSize.auto_size:
             self.CanvasSize.UpdateOptimalCanvasSize(((self.CanvasParams + 1) * self.CanvasSize.original_size).astype(int).tolist())
             self.LayoutViewer.CanvasSize = self.CanvasSize.optimal_size
-
         # Update Image Params
         for i, Img in enumerate(self.ImagesList):
             Img.UpdateCanvasSize(self.CanvasSize)
@@ -404,10 +425,10 @@ class Optimizer:
     def CalPicPerPixel(self):
         return self.CanvasArray.sum() / self.CanvasArray.size
 
-    def CalPixelsMoreThanOne(self):
+    def CalPixelsOverLap(self):
         MoreThanOneArray = self.CanvasArray.copy()
         MoreThanOneArray[MoreThanOneArray <= 1] = 0
-        MoreThanOneArray[MoreThanOneArray > 1] = 1
+        # MoreThanOneArray[MoreThanOneArray > 1] = 1
         return MoreThanOneArray.sum()
 
     def CalPixelsOutOfCanvas(self):
@@ -486,6 +507,12 @@ class Optimizer:
 
         return total_counts_list
     
+    def ClampParams(self):
+        self.ImageParams[:, 0] = np.clip(self.ImageParams[:, 0], 1 / len(self.ImagesList), 1)
+        self.ImageParams[:, 1:] = np.clip(self.ImageParams[:, 1:], 0, 1)
+        if self.CanvasSize.auto_size:
+            self.CanvasParams = np.clip(self.CanvasParams, 0, 1)
+
     def GetStackCanvas(self):
         # Initialize the canvas array with zeros
         canvas_size = self.CanvasSize.optimal_size if self.CanvasSize.auto_size else self.CanvasSize.original_size
@@ -504,27 +531,29 @@ class Optimizer:
             bottom_right_y = min(canvas_size[1], img.top_left_y + img.scaled_height)
             if top_left_x < bottom_right_x and top_left_y < bottom_right_y:
                 self.CanvasArray[top_left_x:bottom_right_x, top_left_y:bottom_right_y] += 1
-
+    
     def Loss(self):
         # Get Newest Canvas Array
         self.GetStackCanvas()
 
-        MaxX = len(self.ImagesList) + 1e-5
+        MaxX = len(self.ImagesList) + 1e-8
 
         # Mean Image Pixel Num Per Canvas Pixel
         PicPerPixel = self.CalPicPerPixel()
 
+        PicFillPercentage = 0.9
+
         # CalCulate Pic Per Pixel Loss
-        if PicPerPixel <= 1:
+        if PicPerPixel <= PicFillPercentage:
             X = PicPerPixel
-            PicPerPixelLoss = 5 * math.pow(((X * np.log(X) + 1) / X) - 1, 0.7)
+            PicPerPixelLoss = 10 * math.pow(((X * np.log(X) + 1) / X) - 1, 0.7)
         else:
-            X = (MaxX - PicPerPixel) / (MaxX - 1)
-            PicPerPixelLoss = 5 * math.pow(((X * np.log(X) + 1) / X) - 1, 0.7)
+            X = (MaxX - PicPerPixel) / (MaxX - PicFillPercentage)
+            PicPerPixelLoss = 10 * math.pow(((X * np.log(X) + 1) / X) - 1, 0.7)
 
         # No overlap
-        PixelsMoreThanOne = self.CalPixelsMoreThanOne()
-        PixelsMoreThanOneLoss = 10 * np.log(PixelsMoreThanOne + 1)
+        PixelsMoreThanOne = self.CalPixelsOverLap()
+        PixelsMoreThanOneLoss = 5 * np.log(PixelsMoreThanOne + 1)
 
         # No Out of Canvas
         # PixelsOutOfCanvas = self.CalPixelsOutOfCanvas()
@@ -535,10 +564,11 @@ class Optimizer:
             GapSTD = self.GetGapSTD(int(0.1 * self.CanvasSize.optimal_size[0]))
         else:
             GapSTD = self.GetGapSTD(int(0.1 * self.CanvasSize.original_size[0]))
-        GapLoss = 10*np.log(GapSTD + 1)
+
+        GapLoss = 2*np.log(GapSTD + 1)
 
         # Accumulate Loss
-        Loss = PicPerPixelLoss + PixelsMoreThanOneLoss + GapLoss + 1e-5
+        Loss = (PicPerPixelLoss + PixelsMoreThanOneLoss + GapLoss + 1e-8)
 
         return Loss, [
             PicPerPixel,
